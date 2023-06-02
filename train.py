@@ -5,7 +5,8 @@ from tqdm import tqdm
 
 from peft import LoraConfig, get_peft_model
 from transformers import AutoConfig, AutoTokenizer
-
+from transformers import AutoModelForCausalLM
+from transformers import DataCollatorForSeq2Seq
 from contextlib import nullcontext
 
 from lora_model import LoraModelForCasualLM
@@ -13,6 +14,11 @@ from utils.common import download_from_driver
 from prepare_data import create_datasets
 from torch.distributed import  destroy_process_group
 
+from torch.utils.data import DataLoader, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
+
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group # NEW!!!
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -59,15 +65,16 @@ class Trainer:
 
         # TODO: Setup mixed precision training context. If 'mixed_precision_dtype' is None, use 'nullcontext', 
         # otherwise use 'torch.amp.autocast' with the specified dtype.
-        mixed_precision_dtype = None ### YOUR CODE HERE ###
-        self.ctx = nullcontext() ### YOUR CODE HERE ###
+        mixed_precision_dtype = torch.float16 ### YOUR CODE HERE ###
+        self.ctx = nullcontext() if mixed_precision_dtype == None else torch.amp.autocast(device_type='cuda', dtype=mixed_precision_dtype)
+        # self.ctx = nullcontext() ### YOUR CODE HERE ###
         
 
     def _set_ddp_training(self):
         # TODO: Initialize the DistributedDataParallel wrapper for the model. 
         # You would need to pass the model and specify the device IDs
         # and output device for the data parallelism.
-        self.model = None ### YOUR CODE HERE ###
+        self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank) ### YOUR CODE HERE ###
 
         
     def _run_batch(self, batch):
@@ -147,12 +154,25 @@ class Trainer:
         # Use 'DataCollatorForSeq2Seq' for 'collate_fn', passing 'tokenizer', padding settings, and return_tensors="pt".
         
         data_trainloader = None ### YOUR CODE HERE ###
-
+        if self.is_ddp_training:
+            sampler = DistributedSampler(train_dataset)
+        else:
+            sampler = None
+        collate = DataCollatorForSeq2Seq(tokenizer=tokenizer,padding='longest' ,return_tensors='pt')
+        data_trainloader = DataLoader(train_dataset,
+                                      sampler=sampler,
+                                      batch_size=self.batch_size,
+                                      collate_fn=collate)
         # TODO: Prepare the evaluation DataLoader. Initialize 'DataLoader' with 'eval_dataset', 
         # the appropriate 'batch_size', and 'SequentialSampler' for 'sampler'.
         # Use 'DataCollatorForSeq2Seq' for 'collate_fn', passing 'tokenizer', padding settings, and return_tensors type.
         
         data_testloader = None ### YOUR CODE HERE ###
+        collate = DataCollatorForSeq2Seq(tokenizer=tokenizer,padding='longest' ,return_tensors='pt')
+        data_testloader = DataLoader(eval_dataset,
+                                      sampler=SequentialSampler(eval_dataset),
+                                      batch_size=self.batch_size,
+                                      collate_fn=collate)
         
         return data_trainloader, data_testloader
     
@@ -241,15 +261,23 @@ def load_pretrained_model(local_rank):
     # TODO: Load a pretrained AutoModelForCausalLM from the 'model_path' in float16 data type. 
     # Make sure to set 'device_map' to '{"": torch.device(f"cuda:{local_rank}")}' for DDP training.
 
-    model = None ### YOUR CODE HERE ###
-
+    # model = None ### YOUR CODE HERE ###
+    model = AutoModelForCausalLM.from_pretrained(
+    model_path, 
+    torch_dtype=torch.float16,
+    device_map={"": torch.device(f"cuda:{local_rank}")},
+)
     # TODO: Create a LoraConfig with the parameters: r=8, lora_alpha=16, 
     # lora_dropout=0.05, bias="none", task_type="CAUSAL_LM".
     # We will then use the config to initialize a LoraModelForCasualLM with the loaded model. 
     # Then, print the trainable parameters of the model.
 
     lora_config = None ### YOUR CODE HERE ###
-
+    lora_config = LoraConfig(r=8,
+                             lora_alpha=16,
+                             lora_dropout=0.05,
+                             bias="none",
+                             task_type="CAUSAL_LM")
     # Create LoRA model
     model = LoraModelForCasualLM(model, lora_config)
     # model = get_peft_model(model, lora_config) # Uncomment this line to use PEFT library instead of your implementation in `lora_layer.py`.
@@ -287,14 +315,14 @@ if __name__ == "__main__":
     eval_freq = 150
     
     # TODO: Choose strategy
-    distributed_strategy = "no" ### YOUR CODE HERE ###
+    distributed_strategy = "ddp" ### YOUR CODE HERE ###
     
     if distributed_strategy  == "ddp":
         # TODO: Initialize the process group for distributed data parallelism with nccl backend.
         # After that, you should set the 'local_rank' from the environment variable 'LOCAL_RANK'.
-        
+        init_process_group(backend='nccl')
         # Initialize the process group ### YOUR CODE HERE ###
-        local_rank = None ### YOUR CODE HERE ###
+        local_rank = int(os.environ['LOCAL_RANK']) ### YOUR CODE HERE ###
     else:
         os.environ['RANK'] = '0'
         local_rank = 0
