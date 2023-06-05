@@ -68,7 +68,7 @@ class Trainer:
 
         # TODO: Setup mixed precision training context. If 'mixed_precision_dtype' is None, use 'nullcontext', 
         # otherwise use 'torch.amp.autocast' with the specified dtype.
-        mixed_precision_dtype = torch.float16 ### YOUR CODE HERE ###
+        mixed_precision_dtype = None #torch.float16 ### YOUR CODE HERE ###
         self.ctx = nullcontext() if mixed_precision_dtype == None else torch.amp.autocast(device_type='cuda', dtype=mixed_precision_dtype)
         # self.ctx = nullcontext() ### YOUR CODE HERE ###
         
@@ -94,9 +94,9 @@ class Trainer:
         with self.ctx:
             outputs = self.model(**batch) 
             loss = outputs.loss / self.gradient_accumulation_steps  # Normalize loss
-        # loss.backward()        
+        loss.backward()        
         # Scale the loss and backpropagate with the help of GradScaler
-        self.scaler.scale(loss).backward()
+        # self.scaler.scale(loss).backward()
         return loss.item()
 
     def _run_epoch(self, train_dataloader, epoch):
@@ -121,7 +121,7 @@ class Trainer:
         
         # Add counter for gradient accumulation
         steps = 0
-        self.scaler = GradScaler()
+        # self.scaler = GradScaler()
 
         self.optimizer.zero_grad()  # Reset gradients at the beginning of each epoch
         for step, batch in enumerate(train_progress_bar):
@@ -134,9 +134,9 @@ class Trainer:
 
             # Perform optimizer step and reset gradients after accumulating enough gradients
             if steps % self.gradient_accumulation_steps == 0:
-                # self.optimizer.step()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
+                # self.scaler.step(self.optimizer)
+                # self.scaler.update()
 
                 self.optimizer.zero_grad()
                 torch.cuda.empty_cache()
